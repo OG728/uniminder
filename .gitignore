@@ -16,3 +16,5 @@ Thumbs.db
 *.egg-info/
 dist/
 build/
+*.spec
+UniMinder.exe

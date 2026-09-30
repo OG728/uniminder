@@ -37,9 +37,15 @@ class OllamaPlanner:
             "prompt": build_prompt(context),
             "stream": False,
             "format": "json",
+            "think": False,
         }
-        with httpx.Client(base_url=base_url.rstrip("/"), timeout=60.0) as client:
+        # First request after startup loads the model into memory, which can take minutes.
+        with httpx.Client(base_url=base_url.rstrip("/"), timeout=240.0) as client:
             response = client.post("/api/generate", json=payload)
+            if response.status_code == 400:
+                # Models without a thinking mode reject the think option.
+                payload.pop("think")
+                response = client.post("/api/generate", json=payload)
             response.raise_for_status()
             raw = response.json().get("response") or ""
         return plan_from_text(context, raw, backend="ollama")
@@ -47,6 +53,8 @@ class OllamaPlanner:
 
 def build_prompt(context: PlanContext) -> str:
     due = context.due_at.isoformat() if context.due_at else "unknown"
+    today = datetime.now(timezone.utc).date().isoformat()
+    sessions = max(1, int(context.hours_available * 60) // max(15, context.session_minutes))
     return f"""You are a study coach. Return ONLY valid JSON with this shape:
 {{"title": str, "guide_outline": str, "blocks": [{{"day_offset": int, "duration_min": int, "topic": str}}]}}
 
@@ -57,8 +65,9 @@ Hours available: {context.hours_available}
 Session minutes: {context.session_minutes}
 Description excerpt: {(context.description_excerpt or "")[:800]}
 
-Create a realistic multi-session study schedule. day_offset is days from today (0 = today).
-Do not include markdown fences.
+Today is {today}. Make exactly {sessions} blocks of {context.session_minutes} minutes each,
+spread across the days before the due date. day_offset is days from today (0 = today).
+Give each block a different, specific topic. Do not include markdown fences.
 """
 
 

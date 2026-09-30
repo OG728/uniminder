@@ -24,11 +24,19 @@ CANVAS_ACCESS_TOKEN=your_api_key
 
 
 
+## Open it as an app
+
+Build the launcher once:
+
 ```bash
-uvicorn app.main:app --reload
+pyinstaller --onefile --noconsole --name UniMinder --distpath . --workpath build --specpath build launcher.py
 ```
 
-Open http://127.0.0.1:8000 and click Sync Now.
+That makes `UniMinder.exe` in the project folder. Double-click it and the calendar opens in its own window, no terminal. The exe just runs the code in this folder, so after you change something, close the app and open it again. You don't need to rebuild. Keep the exe in the project folder (you can pin a shortcut to it anywhere).
+
+Click Sync Now the first time you open it.
+
+If you'd rather use the browser, run `uvicorn app.main:app --reload` and open http://127.0.0.1:8000.
 
 ## AI study plans (optional)
 
@@ -50,7 +58,3 @@ For a different provider, also change `AI_BASE_URL` to their API address.
 PLANNER_BACKEND=ollama
 OLLAMA_MODEL=local_model_name
 ```
-
-If you pulled a different model, put its name in `OLLAMA_MODEL` instead.
-
-If the AI can't be reached, it just falls back to the normal planner.
