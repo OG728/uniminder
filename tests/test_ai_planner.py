@@ -22,11 +22,28 @@ def test_get_planner_api_backend():
 
 
 def test_plan_from_text_reads_model_json():
-    raw = '{"title": "Essay plan", "guide_outline": "Outline", "blocks": [{"day_offset": 1, "duration_min": 60, "topic": "Draft"}]}'
+    raw = '{"title": "Essay plan", "guide_outline": "Outline", "blocks": [{"topic": "Outline"}, {"topic": "Draft"}]}'
     result = plan_from_text(_context(), raw, backend="api")
     assert result.backend == "api"
     assert result.title == "Essay plan"
-    assert [b.topic for b in result.blocks] == ["Draft"]
+    assert [b.topic for b in result.blocks] == ["Outline", "Draft"]
+    assert all(b.duration_min == 60 for b in result.blocks)
+
+
+def test_plan_from_text_ignores_model_dates_past_due():
+    due = datetime.now().astimezone().replace(hour=23, minute=59, second=0, microsecond=0) + timedelta(days=1)
+    ctx = PlanContext(
+        assignment_title="Content Quiz 4",
+        course_name="PHYS 124",
+        due_at=due.astimezone(timezone.utc).replace(tzinfo=None),
+        description_excerpt=None,
+        hours_available=4.0,
+        session_minutes=45,
+    )
+    blocks = ",".join(f'{{"day_offset": {i}, "topic": "Topic {i}"}}' for i in range(5))
+    result = plan_from_text(ctx, f'{{"title": "Plan", "blocks": [{blocks}]}}', backend="ollama")
+    assert len(result.blocks) == 5
+    assert max(b.scheduled_date.date() for b in result.blocks) <= due.date()
 
 
 def test_api_planner_without_key_falls_back(monkeypatch):

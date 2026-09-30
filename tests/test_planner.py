@@ -1,6 +1,39 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from app.services.planner import PlanContext, RuleBasedPlanner
+from app.services.planner import PlanContext, RuleBasedPlanner, schedule_sessions
+
+
+def _utc(local: datetime) -> datetime:
+    return local.astimezone().astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def test_schedule_never_goes_past_evening_due_date():
+    today = date(2026, 9, 30)
+    due = _utc(datetime(2026, 10, 1, 23, 59))
+    days = [d.date() for d in schedule_sessions(due, 5, today=today)]
+    assert days == [today, today, today, date(2026, 10, 1), date(2026, 10, 1)]
+
+
+def test_schedule_morning_deadline_stops_the_day_before():
+    today = date(2026, 9, 30)
+    due = _utc(datetime(2026, 10, 3, 9, 30))
+    days = [d.date() for d in schedule_sessions(due, 3, today=today)]
+    assert days[0] == today
+    assert max(days) == date(2026, 10, 2)
+
+
+def test_schedule_spreads_out_when_there_is_time():
+    today = date(2026, 9, 30)
+    due = _utc(datetime(2026, 10, 9, 23, 59))
+    days = [d.date() for d in schedule_sessions(due, 4, today=today)]
+    assert days == [today, date(2026, 10, 3), date(2026, 10, 6), date(2026, 10, 9)]
+
+
+def test_schedule_overdue_puts_everything_today():
+    today = date(2026, 9, 30)
+    due = _utc(datetime(2026, 9, 28, 23, 59))
+    days = {d.date() for d in schedule_sessions(due, 3, today=today)}
+    assert days == {today}
 
 
 def test_rule_planner_creates_sessions_from_hours():

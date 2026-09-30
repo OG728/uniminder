@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import httpx
 
 from app.config import get_settings
+from app.services.dates import to_local
 from app.services.planner import (
     PHASE_TOPICS,
     PlanContext,
     PlannedBlock,
     RuleBasedPlanner,
     StudyPlanResult,
+    schedule_sessions,
+    session_count,
+    session_length,
 )
 
 
@@ -52,22 +56,25 @@ class OllamaPlanner:
 
 
 def build_prompt(context: PlanContext) -> str:
-    due = context.due_at.isoformat() if context.due_at else "unknown"
-    today = datetime.now(timezone.utc).date().isoformat()
-    sessions = max(1, int(context.hours_available * 60) // max(15, context.session_minutes))
+    due = to_local(context.due_at).strftime("%A %b %d, %I:%M %p") if context.due_at else "no due date"
+    today = datetime.now().astimezone().strftime("%A %b %d")
+    count = session_count(context)
+    days = sorted({day.date() for day in schedule_sessions(context.due_at, count)})
+    day_list = ", ".join(day.strftime("%a %b %d") for day in days)
     return f"""You are a study coach. Return ONLY valid JSON with this shape:
-{{"title": str, "guide_outline": str, "blocks": [{{"day_offset": int, "duration_min": int, "topic": str}}]}}
+{{"title": str, "guide_outline": str, "blocks": [{{"topic": str}}]}}
 
 Assignment: {context.assignment_title}
 Course: {context.course_name}
 Due: {due}
-Hours available: {context.hours_available}
-Session minutes: {context.session_minutes}
+Today: {today}
+Study days: {day_list}
 Description excerpt: {(context.description_excerpt or "")[:800]}
 
-Today is {today}. Make exactly {sessions} blocks of {context.session_minutes} minutes each,
-spread across the days before the due date. day_offset is days from today (0 = today).
-Give each block a different, specific topic. Do not include markdown fences.
+Make exactly {count} blocks, in the order they should be studied. Each block is one
+{session_length(context)}-minute session with a different, specific topic. The last block
+should be a final review. Do not put dates or times in the topics. Do not include
+markdown fences.
 """
 
 
@@ -75,25 +82,27 @@ def plan_from_text(context: PlanContext, raw: str, *, backend: str) -> StudyPlan
     parsed = _extract_json(raw)
     title = parsed.get("title") or f"Study plan: {context.assignment_title}"
     outline = parsed.get("guide_outline") or ""
-    blocks_raw = parsed.get("blocks") or []
-    now = datetime.now(timezone.utc).replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
-    blocks: list[PlannedBlock] = []
-    for i, b in enumerate(blocks_raw):
-        if not isinstance(b, dict):
-            continue
-        offset = int(b.get("day_offset") or 0)
-        duration = int(b.get("duration_min") or context.session_minutes)
-        topic = str(b.get("topic") or PHASE_TOPICS[min(i, len(PHASE_TOPICS) - 1)])
-        blocks.append(
-            PlannedBlock(
-                scheduled_date=now + timedelta(days=max(0, offset)),
-                duration_min=max(15, duration),
-                topic=topic,
-                sort_order=i,
-            )
-        )
-    if not blocks:
+    count = session_count(context)
+    topics = [
+        str(b.get("topic") or "").strip()
+        for b in parsed.get("blocks") or []
+        if isinstance(b, dict) and str(b.get("topic") or "").strip()
+    ][:count]
+    if not topics:
         return RuleBasedPlanner().generate(context)
+    while len(topics) < count:
+        topics.append(PHASE_TOPICS[-1] if len(topics) == count - 1 else PHASE_TOPICS[2])
+
+    days = schedule_sessions(context.due_at, count)
+    blocks = [
+        PlannedBlock(
+            scheduled_date=days[i],
+            duration_min=session_length(context),
+            topic=topic,
+            sort_order=i,
+        )
+        for i, topic in enumerate(topics)
+    ]
 
     return StudyPlanResult(
         title=title,

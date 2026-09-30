@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Protocol
 
 from sqlalchemy.orm import Session
 
 from app.db.models import Assignment, StudyBlock, StudyPlan
+from app.services.dates import to_local
 
 
 def utc_now() -> datetime:
@@ -53,22 +54,32 @@ PHASE_TOPICS = (
 )
 
 
+def session_length(context: PlanContext) -> int:
+    return max(15, min(context.session_minutes, 180))
+
+
+def session_count(context: PlanContext) -> int:
+    session = session_length(context)
+    total_minutes = max(session, int(context.hours_available * 60))
+    return max(1, total_minutes // session)
+
+
 class RuleBasedPlanner:
     """Deterministic spaced study plan — no LLM required."""
 
     def generate(self, context: PlanContext) -> StudyPlanResult:
-        session = max(15, min(context.session_minutes, 180))
+        session = session_length(context)
         total_minutes = max(session, int(context.hours_available * 60))
-        num_sessions = max(1, total_minutes // session)
+        num_sessions = session_count(context)
 
-        days = list(context.study_days)
-        if not days:
-            days = _default_study_days(context.due_at, num_sessions)
+        if context.study_days:
+            days = [context.study_days[i % len(context.study_days)] for i in range(num_sessions)]
+        else:
+            days = schedule_sessions(context.due_at, num_sessions)
 
-        # Spread sessions across available days.
         blocks: list[PlannedBlock] = []
         for i in range(num_sessions):
-            day = days[i % len(days)]
+            day = days[i]
             topic = PHASE_TOPICS[min(i * len(PHASE_TOPICS) // num_sessions, len(PHASE_TOPICS) - 1)]
             # Last session always final pass when multi-session.
             if i == num_sessions - 1 and num_sessions > 1:
@@ -103,21 +114,45 @@ class RuleBasedPlanner:
         )
 
 
-def _default_study_days(due_at: datetime | None, num_sessions: int) -> list[datetime]:
-    now = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+def available_days(due_at: datetime | None, today: date | None = None) -> list[date]:
+    """Local calendar days you can study on, from today through the due date.
+
+    The due day only counts when the deadline is in the afternoon or later, so a
+    9:30 a.m. quiz gets its last session the day before.
+    """
+    today = today or datetime.now().astimezone().date()
     if due_at is None:
-        return [now + timedelta(days=i) for i in range(max(1, num_sessions))]
-    due_day = due_at.replace(hour=0, minute=0, second=0, microsecond=0)
-    if due_day <= now:
-        return [now]
-    span = (due_day - now).days
-    # Use days before due (exclude due day evening crunch as last optional).
-    usable = max(1, span)
-    count = min(max(num_sessions, 1), usable)
+        return []
+    due_local = to_local(due_at)
+    last = due_local.date()
+    if due_local.hour < 12:
+        last -= timedelta(days=1)
+    if last <= today:
+        return [today]
+    return [today + timedelta(days=i) for i in range((last - today).days + 1)]
+
+
+def schedule_sessions(
+    due_at: datetime | None,
+    count: int,
+    today: date | None = None,
+) -> list[datetime]:
+    """Give each session a day, never after the due date.
+
+    Sessions are spread from today to the last available day. When there are more
+    sessions than days, some days get more than one.
+    """
+    today = today or datetime.now().astimezone().date()
+    count = max(1, count)
+    days = available_days(due_at, today)
+    if not days:
+        days = [today + timedelta(days=i) for i in range(count)]
     if count == 1:
-        return [now]
-    step = usable / count
-    return [now + timedelta(days=int(i * step)) for i in range(count)]
+        picked = [days[0]]
+    else:
+        last = len(days) - 1
+        picked = [days[round(i * last / (count - 1))] for i in range(count)]
+    return [datetime.combine(day, time.min) for day in picked]
 
 
 def get_planner(backend: str) -> StudyPlanner:
