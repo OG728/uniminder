@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UNI Reminder</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="page {% if panel_open %}panel-open{% endif %} {% if view == 'calendar' %}calendar-view{% endif %}">
+    <header class="top">
+      <div class="brand">
+        <h1>UNI Reminder</h1>
+        <p class="tagline">Semester calendar for Canvas due dates and study sessions</p>
+      </div>
+      <div class="sync-bar">
+        <span id="last-sync" class="muted">
+          {% if last_sync %}Last sync: {{ last_sync }}{% else %}Not synced yet{% endif %}
+        </span>
+        <button type="button" id="sync-btn" class="btn primary">Sync Now</button>
+        <span id="sync-status" class="muted" aria-live="polite"></span>
+      </div>
+    </header>
+
+    <nav class="view-nav" aria-label="Primary">
+      <a class="{% if view == 'calendar' %}active{% endif %}" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(view='calendar', day=none) }}">Calendar</a>
+      <a class="{% if view == 'list' %}active{% endif %}" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(view='list', month=none, day=none) }}">Assignments</a>
+    </nav>
+
+    <form class="filters" method="get" action="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}">
+      <input type="hidden" name="view" value="{{ view }}" />
+      {% if view == 'calendar' and month_key %}
+      <input type="hidden" name="month" value="{{ month_key }}" />
+      {% endif %}
+      {% if view == 'list' %}
+      <label>
+        Range
+        <select name="range" onchange="this.form.submit()">
+          <option value="week" {% if range == 'week' %}selected{% endif %}>This week</option>
+          <option value="overdue" {% if range == 'overdue' %}selected{% endif %}>Overdue</option>
+          <option value="later" {% if range == 'later' %}selected{% endif %}>Later</option>
+          <option value="all" {% if range == 'all' %}selected{% endif %}>All</option>
+        </select>
+      </label>
+      {% else %}
+      <input type="hidden" name="range" value="{{ range }}" />
+      {% endif %}
+      <label>
+        Course
+        <select name="course_id" onchange="this.form.submit()">
+          <option value="">All courses</option>
+          {% for c in courses %}
+          <option value="{{ c.id }}" {% if course_id == c.id %}selected{% endif %}>
+            {{ c.course_code or c.name }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="check">
+        <input type="checkbox" name="include_done" value="1" {% if include_done %}checked{% endif %} onchange="this.form.submit()" />
+        Show completed
+      </label>
+    </form>
+
+    <main class="layout">
+      {% if view == 'calendar' and calendar %}
+      <section class="calendar" aria-label="Calendar">
+        <div class="cal-toolbar">
+          <a class="btn ghost" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(month=calendar.prev_month, day=none) }}" aria-label="Previous month">‹</a>
+          <h2>{{ calendar.label }}</h2>
+          <a class="btn ghost" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(month=calendar.next_month, day=none) }}" aria-label="Next month">›</a>
+          <a class="btn ghost" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(month=calendar.today_month, day=none) }}">Today</a>
+        </div>
+        <ul class="legend">
+          <li><span class="swatch overdue"></span>Overdue</li>
+          <li><span class="swatch due_soon"></span>Due soon</li>
+          <li><span class="swatch later"></span>Upcoming</li>
+          <li><span class="swatch study"></span>Study session</li>
+          <li><span class="swatch completed"></span>Completed</li>
+        </ul>
+        <div class="cal-scroll">
+          <div class="cal-grid" role="grid">
+            {% for label in calendar.weekday_labels %}
+            <div class="cal-dow" role="columnheader">{{ label }}</div>
+            {% endfor %}
+            {% for week in calendar.weeks %}
+              {% for day_cell in week %}
+              <div class="cal-day {% if not day_cell.in_month %}outside{% endif %} {% if day_cell.is_today %}today{% endif %} {% if day_cell.is_selected %}selected{% endif %}" role="gridcell">
+                <a class="day-num" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(day=day_cell.iso) }}" aria-label="{{ day_cell.aria_label }}">{{ day_cell.day_num }}</a>
+                {% for event in day_cell.events[:3] %}
+                <a class="cal-event {{ event.status }} kind-{{ event.kind }}" href="/plan/{{ event.assignment_id }}?{{ q(day=day_cell.iso) }}" title="{{ event.title }}{% if event.subtitle %} · {{ event.subtitle }}{% endif %}">
+                  <span class="ev-time">{{ event.time_label }}</span>
+                  {{ event.title }}
+                </a>
+                {% endfor %}
+                {% if day_cell.events|length > 3 %}
+                <a class="more" href="{% if selected_id %}/plan/{{ selected_id }}{% else %}/{% endif %}?{{ q(day=day_cell.iso) }}">+{{ day_cell.events|length - 3 }} more</a>
+                {% endif %}
+              </div>
+              {% endfor %}
+            {% endfor %}
+          </div>
+        </div>
+        {% if calendar.selected_label %}
+        <div class="agenda">
+          <h3>{{ calendar.selected_label }}</h3>
+          {% if calendar.selected_events %}
+          <ul class="agenda-list">
+            {% for event in calendar.selected_events %}
+            <li class="agenda-item status-{{ event.status }}">
+              <span class="chip {{ event.status }}">{% if event.kind == 'study' %}study{% else %}{{ event.status.replace('_', ' ') }}{% endif %}</span>
+              <div>
+                <a class="title" href="/plan/{{ event.assignment_id }}?{{ q(day=calendar.selected_iso) }}">{{ event.title }}</a>
+                <div class="sub">
+                  {% if event.subtitle %}<span>{{ event.subtitle }}</span><span>·</span>{% endif %}
+                  <span>{{ event.time_label }}</span>
+                </div>
+              </div>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p class="muted">Nothing due or scheduled this day.</p>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% if calendar.undated_count %}
+        <p class="muted small undated">
+          {{ calendar.undated_count }} assignment{{ 's' if calendar.undated_count != 1 else '' }} with no due date —
+          <a href="/?{{ q(view='list', range='all', month=none, day=none) }}">view in the list</a>.
+        </p>
+        {% endif %}
+        {% if calendar.event_count == 0 and not last_sync %}
+        <p class="muted small">Sync from Canvas to fill the calendar.</p>
+        {% endif %}
+      </section>
+      {% else %}
+      <section class="list" aria-label="Assignments">
+        {% if not assignments %}
+        <div class="empty">
+          <p>No assignments in this view.</p>
+          <p class="muted">Configure <code>.env</code> and click <strong>Sync Now</strong> to pull from Canvas.</p>
+        </div>
+        {% else %}
+        <ul class="assignment-list">
+          {% for a in assignments %}
+          <li class="assignment {% if selected_id == a.id %}selected{% endif %} status-{{ a.status }} {% if a.done or a.canvas_completed %}is-done{% endif %}">
+            <div class="row-main">
+              <span class="chip {{ a.status }}">{{ a.status.replace('_', ' ') }}</span>
+              <div class="meta">
+                <a class="title" href="/plan/{{ a.id }}?{{ q() }}">
+                  {{ a.name }}
+                </a>
+                <div class="sub">
+                  <span>{{ a.course_code or a.course_name }}</span>
+                  <span>·</span>
+                  <span>Due {{ a.due_at | fmt_due }}</span>
+                  {% if a.canvas_completed %}
+                  <span>·</span>
+                  <span>{% if a.submitted_at %}Submitted {{ a.submitted_at | fmt_due }}{% else %}Submitted on Canvas{% endif %}</span>
+                  {% endif %}
+                  {% if a.points is not none %}<span>·</span><span>{{ a.points }} pts</span>{% endif %}
+                </div>
+              </div>
+            </div>
+            <div class="row-actions">
+              {% if a.html_url %}
+              <a class="btn ghost" href="{{ a.html_url }}" target="_blank" rel="noopener">Canvas</a>
+              {% endif %}
+              {% if a.canvas_completed %}
+              <span class="btn ghost submitted-label">Submitted</span>
+              {% else %}
+              <button
+                type="button"
+                class="btn ghost toggle-done"
+                data-id="{{ a.id }}"
+                data-done="{{ 'true' if a.done else 'false' }}"
+              >{% if a.done %}Undo{% else %}Done{% endif %}</button>
+              {% endif %}
+              <a class="btn secondary" href="/plan/{{ a.id }}?{{ q() }}">Plan study</a>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </section>
+      {% endif %}
+
+      <aside class="panel" aria-label="Study plan">
+        {% if selected_assignment %}
+        <div class="panel-inner">
+          <header class="panel-head">
+            <h2>Study plan</h2>
+            <a class="close" href="/?{{ q() }}" aria-label="Close">×</a>
+          </header>
+          <p class="panel-title">{{ selected_assignment.name }}</p>
+          <p class="muted">{{ selected_assignment.course_name }} · Due {{ selected_assignment.due_at | fmt_due }}</p>
+          {% if selected_assignment.canvas_completed %}
+          <p class="muted small">Submitted on Canvas{% if selected_assignment.submitted_at %} · {{ selected_assignment.submitted_at | fmt_due }}{% endif %}</p>
+          {% endif %}
+          <p class="muted small">Planner backend: <code>{{ planner_backend }}</code></p>
+
+          <form id="plan-form" class="plan-form" data-assignment-id="{{ selected_assignment.id }}">
+            <label>
+              Hours available until due
+              <input type="number" name="hours_available" min="0.5" max="80" step="0.5" value="4" required />
+            </label>
+            <label>
+              Session length (minutes)
+              <input type="number" name="session_minutes" min="15" max="180" step="5" value="45" required />
+            </label>
+            <button type="submit" class="btn primary block">Generate plan</button>
+          </form>
+
+          <div id="plan-result">
+            {% if plan %}
+            <article class="plan-card">
+              <h3>{{ plan.title }}</h3>
+              {% if plan.guide_outline %}
+              <pre class="outline">{{ plan.guide_outline }}</pre>
+              {% endif %}
+              <ul class="blocks">
+                {% for b in plan.blocks %}
+                <li class="block status-{{ b.status }}">
+                  <div>
+                    <strong>{{ b.topic }}</strong>
+                    <div class="muted small">
+                      {{ b.scheduled_date | fmt_dt }} · {{ b.duration_min }} min
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn ghost toggle-block"
+                    data-block-id="{{ b.id }}"
+                    data-status="{{ b.status }}"
+                  >{% if b.status == 'done' %}Undo{% else %}Mark done{% endif %}</button>
+                </li>
+                {% endfor %}
+              </ul>
+            </article>
+            {% else %}
+            <p class="muted">No plan yet — set your hours and generate one.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% else %}
+        <div class="panel-placeholder">
+          <h2>Study plan</h2>
+          <p class="muted">Select an assignment and click <strong>Plan study</strong> to build a schedule here.</p>
+        </div>
+        {% endif %}
+      </aside>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
